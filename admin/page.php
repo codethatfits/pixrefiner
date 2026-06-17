@@ -112,7 +112,7 @@ function wpturbo_webp_converter_page() {
 
                 <!-- Pane 1: Controls -->
                 <div style="background: #FFFFFF; padding: 20px; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-                    <h1 style="font-size: 20px; font-weight: bold; color: #333; margin: -5px 0 15px 0;"><?php esc_html_e( 'PixRefiner - Image Optimization - v3.5', 'pixrefiner' ); ?></h1>
+                    <h1 style="font-size: 20px; font-weight: bold; color: #333; margin: -5px 0 15px 0;"><?php esc_html_e( 'PixRefiner - Image Optimization - v3.6', 'pixrefiner' ); ?></h1>
 
                     <?php if ( ! $has_image_library ) : ?>
                         <div class="notice notice-error" style="margin-bottom: 20px;">

@@ -32,8 +32,12 @@ function wpturbo_ensure_mime_types() {
     }
     $new_content .= "# END WebP Converter MIME Types\n";
 
-    // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
-    file_put_contents( $htaccess_file, $content . "\n" . $new_content );
+    global $wp_filesystem;
+    if ( empty( $wp_filesystem ) ) {
+        require_once ABSPATH . 'wp-admin/includes/file.php';
+        WP_Filesystem();
+    }
+    $wp_filesystem->put_contents( $htaccess_file, $content . "\n" . $new_content, FS_CHMOD_FILE );
     return true;
 }
 

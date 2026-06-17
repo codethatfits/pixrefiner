@@ -246,10 +246,11 @@ function wpturbo_fix_format_metadata( $metadata, $attachment_id ) {
         if ( $index === 0 ) continue;
         $size_file = "$dirname/$base_name-$dimension.$extension";
         if ( file_exists( $size_file ) ) {
+            $size_dims = wp_getimagesize( $size_file );
             $metadata['sizes']["custom-$dimension"] = [
                 'file'      => "$base_name-$dimension.$extension",
-                'width'     => ( $mode === 'width' ) ? $dimension : 0,
-                'height'    => ( $mode === 'height' ) ? $dimension : 0,
+                'width'     => $size_dims ? $size_dims[0] : ( ( $mode === 'width' ) ? $dimension : 0 ),
+                'height'    => $size_dims ? $size_dims[1] : ( ( $mode === 'height' ) ? $dimension : 0 ),
                 'mime-type' => $format,
             ];
         }
@@ -440,10 +441,11 @@ function wpturbo_convert_single_image() {
                     if ( $index === 0 ) continue;
                     $size_file = "$dirname/$base_name-$dimension.$current_ext";
                     if ( file_exists( $size_file ) ) {
+                        $size_dims = wp_getimagesize( $size_file );
                         $meta['sizes']["custom-$dimension"] = [
                             'file'      => "$base_name-$dimension.$current_ext",
-                            'width'     => ( $mode === 'width' ) ? $dimension : 0,
-                            'height'    => ( $mode === 'height' ) ? $dimension : 0,
+                            'width'     => $size_dims ? $size_dims[0] : ( ( $mode === 'width' ) ? $dimension : 0 ),
+                            'height'    => $size_dims ? $size_dims[1] : ( ( $mode === 'height' ) ? $dimension : 0 ),
                             'mime-type' => $format,
                         ];
                     }

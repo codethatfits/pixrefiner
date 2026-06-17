@@ -2,9 +2,9 @@
 Contributors: codethatfits
 Tags: images, webp, avif, image optimization, convert
 Requires at least: 6.0
-Tested up to: 6.9
+Tested up to: 7.0
 Requires PHP: 8.0
-Stable tag: 3.5
+Stable tag: 3.6
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -36,6 +36,9 @@ PixRefiner converts your WordPress media library images to WebP or AVIF format, 
 3. Go to **Media → PixRefiner** to configure and run.
 
 == Changelog ==
+
+= 3.6 =
+* Fixed custom image sizes (Custom 1200, Custom 600, Custom 300) reporting 1px height in Gutenberg by reading actual pixel dimensions from generated files instead of hardcoding 0.
 
 = 3.5 =
 * Initial plugin release (converted from code snippet).
