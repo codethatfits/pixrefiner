@@ -50,6 +50,16 @@ function wpturbo_get_excluded_images() {
     return is_array( $excluded ) ? array_map( 'absint', $excluded ) : [];
 }
 
+// wpturbo_default_size_candidates() sizes the site owner has confirmed as
+// "actually used" (see includes/detection.php). Returns null if that choice
+// has never been saved — callers should treat null as "keep all defaults"
+// (the safe behavior — nothing gets dropped until you explicitly confirm).
+function wpturbo_get_kept_default_sizes() {
+    $value = get_option( 'webp_kept_default_sizes', null );
+    if ( ! is_array( $value ) ) return null;
+    return array_values( array_intersect( $value, wpturbo_default_size_candidates() ) );
+}
+
 // ─── Exclusion helpers ────────────────────────────────────────────────────────
 
 function wpturbo_add_excluded_image( $attachment_id ) {
@@ -242,6 +252,23 @@ function wpturbo_set_min_size_kb() {
         $log[] = sprintf( __( 'Minimum size threshold set to: %d KB', 'pixrefiner' ), $min_size );
         update_option( 'webp_conversion_log', array_slice( (array) $log, -500 ) );
     }
+    return true;
+}
+
+function wpturbo_set_kept_default_sizes() {
+    $nonce = isset( $_GET['_wpnonce'] ) ? sanitize_text_field( wp_unslash( $_GET['_wpnonce'] ) ) : '';
+    if ( ! wp_verify_nonce( $nonce, 'pixrefiner_settings' ) || ! current_user_can( 'manage_options' ) ) return false;
+    if ( ! isset( $_GET['set_kept_default_sizes'] ) ) return false;
+
+    $raw     = isset( $_GET['kept_default_sizes'] ) ? wp_unslash( $_GET['kept_default_sizes'] ) : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
+    $chosen  = array_filter( array_map( 'sanitize_text_field', explode( ',', $raw ) ) );
+    $allowed = array_values( array_intersect( $chosen, wpturbo_default_size_candidates() ) );
+
+    update_option( 'webp_kept_default_sizes', $allowed );
+    $log   = get_option( 'webp_conversion_log', [] );
+    /* translators: %s: comma-separated list of kept default image sizes, or "(none)" */
+    $log[] = sprintf( __( 'Kept default image sizes set to: %s', 'pixrefiner' ), $allowed ? implode( ', ', $allowed ) : __( '(none)', 'pixrefiner' ) );
+    update_option( 'webp_conversion_log', array_slice( (array) $log, -500 ) );
     return true;
 }
 

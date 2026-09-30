@@ -23,14 +23,14 @@ function wpturbo_ensure_mime_types() {
         return true;
     }
 
-    $new_content = "# BEGIN WebP Converter MIME Types\n";
+    $new_content = "# BEGIN WebP Converter MIME Types\n<IfModule mod_mime.c>\n";
     if ( strpos( $content, $webp_mime ) === false ) {
         $new_content .= "$webp_mime\n";
     }
     if ( strpos( $content, $avif_mime ) === false ) {
         $new_content .= "$avif_mime\n";
     }
-    $new_content .= "# END WebP Converter MIME Types\n";
+    $new_content .= "</IfModule>\n# END WebP Converter MIME Types\n";
 
     global $wp_filesystem;
     if ( empty( $wp_filesystem ) ) {
@@ -39,6 +39,20 @@ function wpturbo_ensure_mime_types() {
     }
     $wp_filesystem->put_contents( $htaccess_file, $content . "\n" . $new_content, FS_CHMOD_FILE );
     return true;
+}
+
+// WordPress's own built-in intermediate sizes — the ones wpturbo_limit_image_sizes()
+// decides whether to keep generating, based on wpturbo_get_kept_default_sizes().
+function wpturbo_default_size_candidates() {
+    return [ 'medium', 'medium_large', 'large', '1536x1536', '2048x2048' ];
+}
+
+// Strips a WP/PixRefiner-generated size suffix ("-1920", "-150x150", "-scaled")
+// off a filename (without extension) to recover the attachment's base name.
+// Used to make sure the cleanup routine only ever deletes files that are
+// clearly derivatives of a tracked media-library attachment.
+function wpturbo_extract_attachment_base_name( $filename_without_ext ) {
+    return preg_replace( '/-(\d+x\d+|\d+|scaled)$/', '', $filename_without_ext );
 }
 
 add_action( 'wp_delete_attachment', 'wpturbo_delete_attachment_files', 10, 1 );
@@ -106,21 +120,24 @@ function wpturbo_replace_urls_in_elementor_urls( $data, $baseurl, $basedir, $ext
     return $data;
 }
 
-add_filter( 'image_size_names_choose', 'wpturbo_disable_default_sizes', 999 );
-function wpturbo_disable_default_sizes( $sizes ) {
+add_filter( 'image_size_names_choose', 'wpturbo_add_custom_size_names', 999 );
+function wpturbo_add_custom_size_names( $sizes ) {
+    // Add our custom breakpoints to the picker alongside WordPress's own
+    // default sizes (Thumbnail/Medium/Large/Full) — merge, don't replace, now
+    // that those defaults are real generated files again (see
+    // wpturbo_limit_image_sizes() in conversion.php).
     $mode       = wpturbo_get_resize_mode();
     $max_values = ( $mode === 'width' ) ? wpturbo_get_max_widths() : wpturbo_get_max_heights();
-    $custom_sizes = [ 'thumbnail' => __( 'Thumbnail (150x150)', 'pixrefiner' ) ];
     foreach ( array_slice( $max_values, 1, 3 ) as $value ) {
         if ( $mode === 'width' ) {
             /* translators: %d: image width in pixels */
-            $custom_sizes["custom-$value"] = sprintf( __( 'Custom %dpx Width', 'pixrefiner' ), $value );
+            $sizes["custom-$value"] = sprintf( __( 'Custom %dpx Width', 'pixrefiner' ), $value );
         } else {
             /* translators: %d: image height in pixels */
-            $custom_sizes["custom-$value"] = sprintf( __( 'Custom %dpx Height', 'pixrefiner' ), $value );
+            $sizes["custom-$value"] = sprintf( __( 'Custom %dpx Height', 'pixrefiner' ), $value );
         }
     }
-    return $custom_sizes;
+    return $sizes;
 }
 
 add_filter( 'big_image_size_threshold', '__return_false', 999 );

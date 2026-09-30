@@ -9,6 +9,7 @@ add_action( 'admin_init', function () {
     add_action( 'wp_ajax_webp_add_excluded_image',     'wpturbo_add_excluded_image_ajax' );
     add_action( 'wp_ajax_webp_remove_excluded_image',  'wpturbo_remove_excluded_image_ajax' );
     add_action( 'wp_ajax_convert_post_images_to_webp', 'wpturbo_convert_post_images_to_format' );
+    add_action( 'wp_ajax_webp_scan_used_sizes',        'wpturbo_scan_used_sizes_ajax' );
 
     // phpcs:ignore WordPress.Security.NonceVerification.Recommended
     if ( isset( $_GET['convert_existing_images_to_webp'] ) && current_user_can( 'manage_options' ) ) {
@@ -86,6 +87,30 @@ function wpturbo_webp_conversion_status() {
         'use_avif'                => wpturbo_get_use_avif(),
         'quality'                 => wpturbo_get_quality(),
         'batch_size'              => wpturbo_get_batch_size(),
+        'default_size_candidates' => wpturbo_default_size_candidates(),
+        'kept_default_sizes'      => wpturbo_get_kept_default_sizes(), // null = never confirmed, keep all
+        'detected_used_sizes'     => get_option( 'webp_detected_used_sizes', null ),
+        'detected_used_sizes_detail' => get_option( 'webp_detected_used_sizes_detail', [] ),
+    ] );
+}
+
+// ─── Used-size scan ───────────────────────────────────────────────────────────
+
+function wpturbo_scan_used_sizes_ajax() {
+    check_ajax_referer( 'webp_converter_nonce', 'nonce' );
+    if ( ! current_user_can( 'manage_options' ) ) {
+        wp_send_json_error( __( 'Permission denied', 'pixrefiner' ) );
+    }
+
+    wp_raise_memory_limit( 'admin' );
+    // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged
+    set_time_limit( 0 );
+
+    $found = wpturbo_scan_used_image_sizes();
+
+    wp_send_json_success( [
+        'detected' => array_keys( $found ),
+        'detail'   => $found,
     ] );
 }
 
@@ -127,6 +152,14 @@ function wpturbo_convert_post_images_to_format() {
 
     $use_avif  = wpturbo_get_use_avif();
     $extension = $use_avif ? 'avif' : 'webp';
+
+    // Large sites can have thousands of posts to scan; this runs as a single
+    // pass (no offset/batching like the image converter), so give it room to
+    // finish rather than risk a partial run on max_execution_time.
+    wp_raise_memory_limit( 'admin' );
+    // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged
+    set_time_limit( 0 );
+
     /* translators: %s: output format name, either "AVIF" or "WebP" */
     wpturbo_add_log_entry( sprintf( __( 'Starting post/page/FSE-template image conversion to %s...', 'pixrefiner' ), $use_avif ? 'AVIF' : 'WebP' ) );
 
@@ -154,70 +187,102 @@ function wpturbo_convert_post_images_to_format() {
         $title_raw = get_the_title( $post_id );
         $title     = trim( preg_replace( '/\s+/', ' ', wp_strip_all_tags( preg_replace( '/<\/?br\s*\/?>/i', ' ', $title_raw ) ) ) );
 
-        if ( strpos( $type, 'elementor_' ) === 0 ) {
-            wpturbo_add_log_entry( "⏭️ Skipped Elementor-type post: {$type} (ID: {$post_id})" );
-            continue;
+        wpturbo_add_log_entry( "🔧 {$type}: {$title} (ID: {$post_id})" );
+
+        // Elementor stores its real page-building data as JSON in the
+        // `_elementor_data` postmeta — post_content for an Elementor-built
+        // post/page is just a rendered/fallback copy, not the source of
+        // truth, so it never carries the image URLs Elementor actually
+        // renders. Fix the postmeta directly.
+        $elementor_data = get_post_meta( $post_id, '_elementor_data', true );
+        if ( ! empty( $elementor_data ) ) {
+            $elementor_array = json_decode( $elementor_data, true );
+            if ( json_last_error() === JSON_ERROR_NONE && is_array( $elementor_array ) ) {
+                $original_elementor_array = $elementor_array;
+                $elementor_array          = wpturbo_replace_urls_in_elementor_urls( $elementor_array, $upload_baseurl, $upload_basedir, $extension, $checked_images );
+
+                // Compare decoded structures, not re-encoded strings. Elementor itself saves
+                // this meta via wp_json_encode() with no flags, which escapes every "/" as
+                // "\/"; re-encoding without matching that would make the string differ from
+                // the original on every single Elementor page (via the slash escaping alone)
+                // regardless of whether any image URL actually changed, forcing a write and an
+                // _elementor_css cache-bust on pages this step never touched.
+                if ( $elementor_array !== $original_elementor_array ) {
+                    $new_elementor_data = wp_json_encode( $elementor_array );
+                    if ( $new_elementor_data !== false ) {
+                        // update_post_meta() unconditionally runs wp_unslash() on the value it's
+                        // given (it expects callers to pass already-slashed data, matching how
+                        // $_POST arrives). Elementor's JSON is full of literal backslashes
+                        // (escaped quotes, \n in text fields, etc.); without wp_slash() here,
+                        // that unslash step eats one level of them and corrupts the JSON. This
+                        // is the same thing Elementor's own Document::save_elements() does.
+                        update_post_meta( $post_id, '_elementor_data', wp_slash( $new_elementor_data ) );
+                        // Elementor caches rendered CSS/HTML keyed off the data; clear it
+                        // so the old URLs don't linger in the cached output.
+                        delete_post_meta( $post_id, '_elementor_css' );
+                        $updated_count++;
+                    }
+                }
+            }
         }
 
         $original_content = get_post_field( 'post_content', $post_id );
         $content          = $original_content;
-        wpturbo_add_log_entry( "🔧 {$type}: {$title} (ID: {$post_id})" );
 
-        $content_array = json_decode( $content, true );
-        if ( json_last_error() === JSON_ERROR_NONE && is_array( $content_array ) ) {
-            $content_array = wpturbo_replace_urls_in_elementor_urls( $content_array, $upload_baseurl, $upload_basedir, $extension, $checked_images );
-            $content       = json_encode( $content_array, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
-        } else {
-            // Replace <img src>
-            $content = preg_replace_callback(
-                '/<img[^>]+src=["\']([^"\']+\.(?:jpg|jpeg|png))["\'][^>]*>/i',
-                function ( $matches ) use ( &$checked_images, $upload_baseurl, $upload_basedir, $extension ) {
-                    $original_url = $matches[1];
-                    if ( strpos( $original_url, $upload_baseurl ) !== 0 ) return $matches[0];
-                    $checked_images++;
-                    return wpturbo_replace_img_url( $matches[0], $original_url, $upload_baseurl, $upload_basedir, $extension );
-                },
-                $content
-            );
+        // Replace <img src>
+        $content = preg_replace_callback(
+            '/<img[^>]+src=["\']([^"\']+\.(?:jpg|jpeg|png))["\'][^>]*>/i',
+            function ( $matches ) use ( &$checked_images, $upload_baseurl, $upload_basedir, $extension ) {
+                $original_url = $matches[1];
+                if ( strpos( $original_url, $upload_baseurl ) !== 0 ) return $matches[0];
+                $checked_images++;
+                return wpturbo_replace_img_url( $matches[0], $original_url, $upload_baseurl, $upload_basedir, $extension );
+            },
+            $content
+        );
 
-            // Replace <a href>
-            $content = preg_replace_callback(
-                '/<a[^>]+href=["\']([^"\']+\.(?:jpg|jpeg|png))["\'][^>]*>/i',
-                function ( $matches ) use ( &$checked_images, &$changed_links, $upload_baseurl, $upload_basedir, $extension ) {
-                    $original_url = $matches[1];
-                    if ( strpos( $original_url, $upload_baseurl ) !== 0 ) return $matches[0];
-                    $checked_images++;
-                    $result = wpturbo_replace_img_url( $matches[0], $original_url, $upload_baseurl, $upload_basedir, $extension );
-                    if ( $result !== $matches[0] ) $changed_links++;
-                    return $result;
-                },
-                $content
-            );
+        // Replace <a href>
+        $content = preg_replace_callback(
+            '/<a[^>]+href=["\']([^"\']+\.(?:jpg|jpeg|png))["\'][^>]*>/i',
+            function ( $matches ) use ( &$checked_images, &$changed_links, $upload_baseurl, $upload_basedir, $extension ) {
+                $original_url = $matches[1];
+                if ( strpos( $original_url, $upload_baseurl ) !== 0 ) return $matches[0];
+                $checked_images++;
+                $result = wpturbo_replace_img_url( $matches[0], $original_url, $upload_baseurl, $upload_basedir, $extension );
+                if ( $result !== $matches[0] ) $changed_links++;
+                return $result;
+            },
+            $content
+        );
 
-            // Replace srcset
-            $content = preg_replace_callback(
-                '/srcset=["\']([^"\']+)["\']/',
-                function ( $matches ) use ( &$checked_images, $upload_baseurl, $upload_basedir, $extension ) {
-                    $srcset     = $matches[1];
-                    $new_srcset = preg_replace_callback(
-                        '/([^\s,]+\.(?:jpg|jpeg|png))(\s+\d+[wx])?/i',
-                        function ( $src_m ) use ( &$checked_images, $upload_baseurl, $upload_basedir, $extension ) {
-                            $original_url = $src_m[1];
-                            if ( strpos( $original_url, $upload_baseurl ) !== 0 ) return $src_m[0];
-                            $checked_images++;
-                            $replaced = wpturbo_replace_url_string( $original_url, $upload_baseurl, $upload_basedir, $extension );
-                            return $replaced . ( $src_m[2] ?? '' );
-                        },
-                        $srcset
-                    );
-                    return 'srcset="' . $new_srcset . '"';
-                },
-                $content
-            );
-        }
+        // Replace srcset
+        $content = preg_replace_callback(
+            '/srcset=["\']([^"\']+)["\']/',
+            function ( $matches ) use ( &$checked_images, $upload_baseurl, $upload_basedir, $extension ) {
+                $srcset     = $matches[1];
+                $new_srcset = preg_replace_callback(
+                    '/([^\s,]+\.(?:jpg|jpeg|png))(\s+\d+[wx])?/i',
+                    function ( $src_m ) use ( &$checked_images, $upload_baseurl, $upload_basedir, $extension ) {
+                        $original_url = $src_m[1];
+                        if ( strpos( $original_url, $upload_baseurl ) !== 0 ) return $src_m[0];
+                        $checked_images++;
+                        $replaced = wpturbo_replace_url_string( $original_url, $upload_baseurl, $upload_basedir, $extension );
+                        return $replaced . ( $src_m[2] ?? '' );
+                    },
+                    $srcset
+                );
+                return 'srcset="' . $new_srcset . '"';
+            },
+            $content
+        );
 
         if ( $content !== $original_content ) {
-            wp_update_post( [ 'ID' => $post_id, 'post_content' => $content ] );
+            // wp_update_post() documents that an array $postarr is expected to already be
+            // slashed (it does not wp_slash() it the way it does for an object). Without
+            // wp_slash() here, wp_insert_post()'s internal wp_unslash() strips any literal
+            // backslash already present in post_content (e.g. escaped quotes in inline
+            // JSON/attributes), corrupting it the same way as the _elementor_data case above.
+            wp_update_post( wp_slash( [ 'ID' => $post_id, 'post_content' => $content ] ) );
             $updated_count++;
         }
     }

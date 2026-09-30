@@ -1,11 +1,9 @@
 <?php
 /**
  * Plugin Name: PixRefiner
- * Plugin URI:  https://codethatfits.com
  * Description: Convert, resize, and optimise media to WebP or AVIF with fine-grained control over sizes, quality, and batch processing.
- * Version:     3.6
- * Author:      CodeThatFits.com
- * Author URI:  https://codethatfits.com
+ * Version:     4.0.1
+ * Author:      Dan Jasker
  * License:     GPL-2.0-or-later
  * Text Domain: pixrefiner
  * Domain Path: /languages
@@ -15,12 +13,13 @@
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
-define( 'PIXREFINER_VERSION',     '3.6' );
+define( 'PIXREFINER_VERSION',     '4.0.1' );
 define( 'PIXREFINER_PLUGIN_FILE', __FILE__ );
 define( 'PIXREFINER_PLUGIN_DIR',  plugin_dir_path( __FILE__ ) );
 
 require_once PIXREFINER_PLUGIN_DIR . 'includes/helpers.php';
 require_once PIXREFINER_PLUGIN_DIR . 'includes/settings.php';
+require_once PIXREFINER_PLUGIN_DIR . 'includes/detection.php';
 require_once PIXREFINER_PLUGIN_DIR . 'includes/conversion.php';
 require_once PIXREFINER_PLUGIN_DIR . 'includes/ajax.php';
 require_once PIXREFINER_PLUGIN_DIR . 'admin/page.php';

@@ -13,31 +13,58 @@ add_action( 'admin_menu', function () {
     );
 } );
 
+// ─── Settings actions (GET-triggered, nonce verified inside each setter) ──────
+// Memoized per-request so admin_notices and the page callback (which both need
+// to know the outcome) trigger each setter at most once, avoiding duplicate
+// option writes and duplicate log entries.
+
+function wpturbo_process_settings_actions() {
+    static $results = null;
+    if ( $results !== null ) return $results;
+
+    $results = [];
+    // phpcs:disable WordPress.Security.NonceVerification.Recommended
+    if ( isset( $_GET['set_max_width'] ) )               $results['set_max_width']               = wpturbo_set_max_widths();
+    if ( isset( $_GET['set_max_height'] ) )               $results['set_max_height']              = wpturbo_set_max_heights();
+    if ( isset( $_GET['set_resize_mode'] ) )              $results['set_resize_mode']             = wpturbo_set_resize_mode();
+    if ( isset( $_GET['set_quality'] ) )                  $results['set_quality']                 = wpturbo_set_quality();
+    if ( isset( $_GET['set_batch_size'] ) )               $results['set_batch_size']              = wpturbo_set_batch_size();
+    if ( isset( $_GET['set_preserve_originals'] ) )       $results['set_preserve_originals']      = wpturbo_set_preserve_originals();
+    if ( isset( $_GET['set_disable_auto_conversion'] ) )  $results['set_disable_auto_conversion'] = wpturbo_set_disable_auto_conversion();
+    if ( isset( $_GET['set_min_size_kb'] ) )              $results['set_min_size_kb']             = wpturbo_set_min_size_kb();
+    if ( isset( $_GET['set_use_avif'] ) )                 $results['set_use_avif']                = wpturbo_set_use_avif();
+    if ( isset( $_GET['set_kept_default_sizes'] ) )       $results['set_kept_default_sizes']      = wpturbo_set_kept_default_sizes();
+    if ( isset( $_GET['prune_unused_default_sizes'] ) )   $results['prune_unused_default_sizes']  = wpturbo_prune_unused_default_sizes();
+    if ( isset( $_GET['cleanup_leftover_originals'] ) )   $results['cleanup_leftover_originals']  = wpturbo_cleanup_leftover_originals();
+    if ( isset( $_GET['clear_log'] ) )                    $results['clear_log']                   = wpturbo_clear_log();
+    if ( isset( $_GET['reset_defaults'] ) )               $results['reset_defaults']              = wpturbo_reset_defaults();
+    // phpcs:enable WordPress.Security.NonceVerification.Recommended
+
+    return $results;
+}
+
 // ─── Admin notices ────────────────────────────────────────────────────────────
 
 add_action( 'admin_notices', function () {
+    $results = wpturbo_process_settings_actions();
+
     // phpcs:ignore WordPress.Security.NonceVerification.Recommended
     if ( isset( $_GET['convert_existing_images_to_webp'] ) ) {
         echo '<div class="notice notice-success"><p>' . esc_html__( 'Conversion started. Monitor progress in Media.', 'pixrefiner' ) . '</p></div>';
     }
-    // phpcs:ignore WordPress.Security.NonceVerification.Recommended
-    if ( isset( $_GET['set_max_width'] ) && wpturbo_set_max_widths() ) {
+    if ( ! empty( $results['set_max_width'] ) ) {
         echo '<div class="notice notice-success"><p>' . esc_html__( 'Max widths updated.', 'pixrefiner' ) . '</p></div>';
     }
-    // phpcs:ignore WordPress.Security.NonceVerification.Recommended
-    if ( isset( $_GET['set_max_height'] ) && wpturbo_set_max_heights() ) {
+    if ( ! empty( $results['set_max_height'] ) ) {
         echo '<div class="notice notice-success"><p>' . esc_html__( 'Max heights updated.', 'pixrefiner' ) . '</p></div>';
     }
-    // phpcs:ignore WordPress.Security.NonceVerification.Recommended
-    if ( isset( $_GET['reset_defaults'] ) && wpturbo_reset_defaults() ) {
+    if ( ! empty( $results['reset_defaults'] ) ) {
         echo '<div class="notice notice-success"><p>' . esc_html__( 'Settings reset to defaults.', 'pixrefiner' ) . '</p></div>';
     }
-    // phpcs:ignore WordPress.Security.NonceVerification.Recommended
-    if ( isset( $_GET['set_min_size_kb'] ) && wpturbo_set_min_size_kb() ) {
+    if ( ! empty( $results['set_min_size_kb'] ) ) {
         echo '<div class="notice notice-success"><p>' . esc_html__( 'Minimum size threshold updated.', 'pixrefiner' ) . '</p></div>';
     }
-    // phpcs:ignore WordPress.Security.NonceVerification.Recommended
-    if ( isset( $_GET['set_use_avif'] ) && wpturbo_set_use_avif() ) {
+    if ( ! empty( $results['set_use_avif'] ) ) {
         echo '<div class="notice notice-success"><p>' . esc_html__( 'Conversion format updated. Please reconvert all images.', 'pixrefiner' ) . '</p></div>';
     }
 } );
@@ -80,21 +107,10 @@ function wpturbo_webp_converter_page() {
     wp_enqueue_script( 'media-upload' );
     wp_enqueue_style( 'media' );
 
-    // Process settings passed via GET (nonce verified inside each setter)
-    // phpcs:disable WordPress.Security.NonceVerification.Recommended
-    if ( isset( $_GET['set_max_width'] ) )               wpturbo_set_max_widths();
-    if ( isset( $_GET['set_max_height'] ) )              wpturbo_set_max_heights();
-    if ( isset( $_GET['set_resize_mode'] ) )             wpturbo_set_resize_mode();
-    if ( isset( $_GET['set_quality'] ) )                 wpturbo_set_quality();
-    if ( isset( $_GET['set_batch_size'] ) )              wpturbo_set_batch_size();
-    if ( isset( $_GET['set_preserve_originals'] ) )      wpturbo_set_preserve_originals();
-    if ( isset( $_GET['set_disable_auto_conversion'] ) ) wpturbo_set_disable_auto_conversion();
-    if ( isset( $_GET['set_min_size_kb'] ) )             wpturbo_set_min_size_kb();
-    if ( isset( $_GET['set_use_avif'] ) )                wpturbo_set_use_avif();
-    if ( isset( $_GET['cleanup_leftover_originals'] ) )  wpturbo_cleanup_leftover_originals();
-    if ( isset( $_GET['clear_log'] ) )                   wpturbo_clear_log();
-    if ( isset( $_GET['reset_defaults'] ) )              wpturbo_reset_defaults();
-    // phpcs:enable WordPress.Security.NonceVerification.Recommended
+    // Process settings passed via GET (nonce verified inside each setter).
+    // Memoized in wpturbo_process_settings_actions() — admin_notices already
+    // triggered this for the current request, so this call is a cache hit.
+    wpturbo_process_settings_actions();
 
     $has_image_library = extension_loaded( 'imagick' ) || extension_loaded( 'gd' );
     $has_avif_support  = ( extension_loaded( 'imagick' ) && in_array( 'AVIF', Imagick::queryFormats() ) )
@@ -103,6 +119,14 @@ function wpturbo_webp_converter_page() {
 
     $settings_nonce = wp_create_nonce( 'pixrefiner_settings' );
     $ajax_nonce     = wp_create_nonce( 'webp_converter_nonce' );
+
+    $default_size_labels = [
+        'medium'       => sprintf( __( 'Medium (%1$dx%2$d)', 'pixrefiner' ), (int) get_option( 'medium_size_w' ), (int) get_option( 'medium_size_h' ) ),
+        'medium_large' => sprintf( __( 'Medium Large (%dpx wide)', 'pixrefiner' ), (int) get_option( 'medium_large_size_w' ) ),
+        'large'        => sprintf( __( 'Large (%1$dx%2$d)', 'pixrefiner' ), (int) get_option( 'large_size_w' ), (int) get_option( 'large_size_h' ) ),
+        '1536x1536'    => __( '1536×1536 (WordPress scaled)', 'pixrefiner' ),
+        '2048x2048'    => __( '2048×2048 (WordPress scaled)', 'pixrefiner' ),
+    ];
     ?>
     <div class="wrap" style="padding: 0; font-size: 14px;">
         <div style="display: flex; gap: 10px; align-items: flex-start;">
@@ -112,7 +136,7 @@ function wpturbo_webp_converter_page() {
 
                 <!-- Pane 1: Controls -->
                 <div style="background: #FFFFFF; padding: 20px; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-                    <h1 style="font-size: 20px; font-weight: bold; color: #333; margin: -5px 0 15px 0;"><?php esc_html_e( 'PixRefiner - Image Optimization - v3.6', 'pixrefiner' ); ?></h1>
+                    <h1 style="font-size: 20px; font-weight: bold; color: #333; margin: -5px 0 15px 0;"><?php esc_html_e( 'PixRefiner - Image Optimization - v4.0', 'pixrefiner' ); ?></h1>
 
                     <?php if ( ! $has_image_library ) : ?>
                         <div class="notice notice-error" style="margin-bottom: 20px;">
@@ -179,6 +203,36 @@ function wpturbo_webp_converter_page() {
                     <?php endif; ?>
                 </div>
 
+                <!-- Pane 1b: Default Image Sizes -->
+                <div style="background: #FFFFFF; padding: 20px; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                    <h2 style="font-size: 16px; margin: 0 0 10px 0;"><?php esc_html_e( 'Default Image Sizes', 'pixrefiner' ); ?></h2>
+                    <?php if ( current_user_can( 'manage_options' ) ) : ?>
+                        <p style="font-size: 12px; color: #666; line-height: 1.4; margin: 0 0 15px 0;">
+                            <?php esc_html_e( "WordPress's own Medium/Large/etc. sizes are generated for every converted image unless turned off here. Scan the site to see which ones Elementor, your theme, and your content actually reference, then uncheck the rest to save disk space and conversion time. Applies to new conversions only \u{2014} re-run \u{201c}Convert/Scale\u{201d} with force_reconvert=1 in the URL to backfill existing media.", 'pixrefiner' ); ?>
+                        </p>
+                        <button id="scan-used-sizes" class="button" style="margin-bottom: 15px;"><?php esc_html_e( 'Scan Site for Used Sizes', 'pixrefiner' ); ?></button>
+                        <div id="scan-status" style="font-size: 12px; color: #666; margin-bottom: 10px;"></div>
+                        <div id="default-size-checkboxes">
+                            <?php foreach ( $default_size_labels as $slug => $label ) : ?>
+                                <div style="margin-bottom: 10px;">
+                                    <label>
+                                        <input type="checkbox" class="keep-default-size" data-size="<?php echo esc_attr( $slug ); ?>" checked>
+                                        <?php echo esc_html( $label ); ?>
+                                    </label>
+                                    <div class="size-source-note" data-size="<?php echo esc_attr( $slug ); ?>" style="font-size: 11px; color: #999; margin-left: 24px;"></div>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
+                        <button id="save-kept-sizes" class="button button-primary" style="margin-top: 5px;"><?php esc_html_e( 'Save Kept Sizes', 'pixrefiner' ); ?></button>
+                        <button id="prune-unused-sizes" class="button" style="margin-top: 5px;"><?php esc_html_e( 'Prune Existing Files for Dropped Sizes', 'pixrefiner' ); ?></button>
+                        <p style="font-size: 11px; color: #999; margin: 8px 0 0 0;">
+                            <?php esc_html_e( 'Save Kept Sizes only affects new conversions. Prune deletes already-generated files for any default size you unchecked above, for every already-converted image.', 'pixrefiner' ); ?>
+                        </p>
+                    <?php else : ?>
+                        <p><?php esc_html_e( 'You need manage_options permission to use this tool.', 'pixrefiner' ); ?></p>
+                    <?php endif; ?>
+                </div>
+
                 <!-- Pane 2: Exclude Images -->
                 <div style="background: #FFFFFF; padding: 20px; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
                     <h2 style="font-size: 16px; margin: 0 0 15px 0;"><?php esc_html_e( 'Exclude Images', 'pixrefiner' ); ?></h2>
@@ -223,9 +277,6 @@ function wpturbo_webp_converter_page() {
                         <b>j) MIME Types:</b> <?php esc_html_e( 'Server must support WebP/AVIF MIME (check with host).', 'pixrefiner' ); ?><br>
                         <b>k) Rollback:</b> <?php esc_html_e( 'If conversion fails, then rollback occurs, and prevents deletion of the original, regardless of whether the Preserve Originals is checked or not.', 'pixrefiner' ); ?>
                     </p>
-                    <div style="margin-top: 20px; display: flex; justify-content: flex-start;">
-                        <a href="https://www.paypal.com/paypalme/iamimransiddiq" target="_blank" rel="noopener noreferrer" class="button" style="border: none;"><?php esc_html_e( 'Support Imran', 'pixrefiner' ); ?></a>
-                    </div>
                 </div>
 
             </div><!-- /Column 1 -->
@@ -304,6 +355,7 @@ function wpturbo_webp_converter_page() {
         const ajaxNonce    = '<?php echo esc_js( $ajax_nonce ); ?>';
         const settingsNonce = '<?php echo esc_js( $settings_nonce ); ?>';
         const batchSize    = <?php echo (int) wpturbo_get_batch_size(); ?>;
+        const defaultSizeCandidates = <?php echo wp_json_encode( array_keys( $default_size_labels ) ); ?>;
 
         function ajaxUrl2( action ) {
             return ajaxUrl + '?action=' + action + '&nonce=' + ajaxNonce;
@@ -311,6 +363,29 @@ function wpturbo_webp_converter_page() {
 
         function settingsUrl( params ) {
             return adminPageUrl + '&_wpnonce=' + settingsNonce + '&' + params;
+        }
+
+        function applyKeptSizesToCheckboxes( keptSizes ) {
+            // null = never confirmed via "Save Kept Sizes" yet — default to
+            // all checked (matches the plugin's safe "keep everything" default).
+            defaultSizeCandidates.forEach( slug => {
+                const box = document.querySelector( `.keep-default-size[data-size="${slug}"]` );
+                if ( box ) box.checked = ( keptSizes === null || keptSizes.includes( slug ) );
+            } );
+        }
+
+        function applyDetectionNotes( detectedSizes, detail ) {
+            defaultSizeCandidates.forEach( slug => {
+                const note = document.querySelector( `.size-source-note[data-size="${slug}"]` );
+                if ( ! note ) return;
+                if ( detectedSizes === null ) {
+                    note.textContent = '<?php echo esc_js( __( 'Not scanned yet.', 'pixrefiner' ) ); ?>';
+                } else if ( detail && detail[ slug ] ) {
+                    note.textContent = '<?php echo esc_js( __( 'Found via:', 'pixrefiner' ) ); ?> ' + Object.keys( detail[ slug ] ).join( ', ' );
+                } else {
+                    note.textContent = '<?php echo esc_js( __( 'Not detected — will be dropped if unchecked.', 'pixrefiner' ) ); ?>';
+                }
+            } );
         }
 
         function updateStatus() {
@@ -327,6 +402,8 @@ function wpturbo_webp_converter_page() {
                     document.getElementById( 'quality-slider' ).value                  = data.quality;
                     document.getElementById( 'quality-value' ).textContent             = data.quality;
                     document.getElementById( 'use-avif' ).checked                      = data.use_avif;
+                    applyKeptSizesToCheckboxes( data.kept_default_sizes );
+                    applyDetectionNotes( data.detected_used_sizes, data.detected_used_sizes_detail );
                     updateExcludedImages( data.excluded_images );
                 } )
                 .catch( err => { console.error( 'updateStatus:', err ); } );
@@ -336,8 +413,27 @@ function wpturbo_webp_converter_page() {
             const ul = document.getElementById( 'excluded-images-list' );
             ul.innerHTML = '';
             list.forEach( img => {
+                // Attachment titles are user-controlled (any role with unfiltered_html,
+                // e.g. Editors on single-site installs, can set arbitrary title text).
+                // Build the row via DOM APIs so title/id are never parsed as HTML.
                 const li = document.createElement( 'li' );
-                li.innerHTML = `<img decoding="async" src="${img.thumbnail}" alt="${img.title}"><span>${img.title} (ID: ${img.id})</span><button class="remove-excluded button" data-id="${img.id}"><?php echo esc_js( __( 'Remove', 'pixrefiner' ) ); ?></button>`;
+
+                const thumb = document.createElement( 'img' );
+                thumb.decoding = 'async';
+                thumb.src = img.thumbnail;
+                thumb.alt = img.title;
+                li.appendChild( thumb );
+
+                const label = document.createElement( 'span' );
+                label.textContent = `${img.title} (ID: ${img.id})`;
+                li.appendChild( label );
+
+                const removeBtn = document.createElement( 'button' );
+                removeBtn.className = 'remove-excluded button';
+                removeBtn.dataset.id = img.id;
+                removeBtn.textContent = '<?php echo esc_js( __( 'Remove', 'pixrefiner' ) ); ?>';
+                li.appendChild( removeBtn );
+
                 ul.appendChild( li );
             } );
             document.querySelectorAll( '.remove-excluded' ).forEach( btn => {
@@ -562,6 +658,48 @@ function wpturbo_webp_converter_page() {
             if ( confirm( '<?php echo esc_js( __( 'Export all media as a ZIP file?', 'pixrefiner' ) ); ?>' ) ) {
                 window.location.href = ajaxUrl2( 'webp_export_media_zip' );
             }
+        } );
+
+        document.getElementById( 'scan-used-sizes' ).addEventListener( 'click', () => {
+            const btn      = document.getElementById( 'scan-used-sizes' );
+            const statusEl = document.getElementById( 'scan-status' );
+            btn.disabled = true;
+            statusEl.textContent = '<?php echo esc_js( __( 'Scanning posts, Elementor data, and theme templates — this can take a moment on larger sites…', 'pixrefiner' ) ); ?>';
+            fetch( ajaxUrl2( 'webp_scan_used_sizes' ), { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' } } )
+                .then( r => { if ( ! r.ok ) throw new Error( r.statusText ); return r.json(); } )
+                .then( d => {
+                    btn.disabled = false;
+                    if ( ! d.success ) { statusEl.textContent = 'Error: ' + d.data; return; }
+                    statusEl.textContent = d.data.detected.length
+                        ? '<?php echo esc_js( __( 'Scan complete. Checkboxes below reflect what was found — review, then click "Save Kept Sizes".', 'pixrefiner' ) ); ?>'
+                        : '<?php echo esc_js( __( 'Scan complete. Nothing referenced any default size — double-check before saving, this can be a false negative for dynamic page builders.', 'pixrefiner' ) ); ?>';
+                    // Suggest checkbox state from the scan; not saved until "Save Kept Sizes".
+                    defaultSizeCandidates.forEach( slug => {
+                        const box = document.querySelector( `.keep-default-size[data-size="${slug}"]` );
+                        if ( box ) box.checked = d.data.detected.includes( slug );
+                    } );
+                    applyDetectionNotes( d.data.detected, d.data.detail );
+                } )
+                .catch( err => {
+                    btn.disabled = false;
+                    statusEl.textContent = 'Scan failed: ' + err.message;
+                } );
+        } );
+
+        document.getElementById( 'save-kept-sizes' ).addEventListener( 'click', () => {
+            const chosen = Array.from( document.querySelectorAll( '.keep-default-size' ) )
+                .filter( cb => cb.checked )
+                .map( cb => cb.dataset.size );
+            fetch( settingsUrl( 'set_kept_default_sizes=1&kept_default_sizes=' + encodeURIComponent( chosen.join( ',' ) ) ) )
+                .then( () => updateStatus() )
+                .catch( err => alert( 'Failed to save kept sizes: ' + err.message ) );
+        } );
+
+        document.getElementById( 'prune-unused-sizes' ).addEventListener( 'click', () => {
+            if ( ! confirm( '<?php echo esc_js( __( 'Delete already-generated files for every unchecked default size, across all converted media? Save Kept Sizes first if you just changed the checkboxes. This cannot be undone short of reconverting.', 'pixrefiner' ) ); ?>' ) ) return;
+            fetch( settingsUrl( 'prune_unused_default_sizes=1' ) )
+                .then( () => updateStatus() )
+                .catch( err => alert( 'Failed to prune sizes: ' + err.message ) );
         } );
 
         <?php endif; ?>

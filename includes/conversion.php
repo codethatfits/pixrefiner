@@ -7,13 +7,27 @@ add_filter( 'intermediate_image_sizes_advanced', 'wpturbo_limit_image_sizes', 99
 function wpturbo_limit_image_sizes( $sizes ) {
     if ( wpturbo_get_disable_auto_conversion() ) return $sizes;
 
-    // Suppress WordPress built-in defaults and plugin-registered custom sizes;
-    // the plugin handles those directly. All other registered sizes (WooCommerce,
-    // theme sizes, third-party plugins) pass through and WordPress generates them
-    // from the already-converted WebP/AVIF source file.
-    $wp_defaults = [ 'medium', 'medium_large', 'large', '1536x1536', '2048x2048' ];
-    foreach ( $wp_defaults as $key ) {
-        unset( $sizes[ $key ] );
+    // Suppress our own plugin-registered custom-XXX breakpoints (handled
+    // directly by wpturbo_convert_to_format() below, not WP's own subsize
+    // machinery). Third-party/theme-registered sizes (WooCommerce, theme
+    // sizes) are always left alone — this plugin doesn't get to decide
+    // whether another plugin's own sizes are needed.
+    //
+    // WordPress's own default sizes (medium, medium_large, large, 1536x1536,
+    // 2048x2048) are kept or dropped based on wpturbo_get_kept_default_sizes():
+    // null (the scan in includes/detection.php has never been confirmed) means
+    // keep all of them — the safe default, so nothing on the site (Elementor
+    // widgets, theme templates) referencing a default size by name silently
+    // falls back to a mismatched size (Elementor in particular falls back to
+    // "thumbnail" when a widget's configured size can't be resolved). Once
+    // confirmed via the admin UI, only the chosen sizes are generated.
+    $kept_defaults = wpturbo_get_kept_default_sizes();
+    if ( $kept_defaults !== null ) {
+        foreach ( wpturbo_default_size_candidates() as $key ) {
+            if ( ! in_array( $key, $kept_defaults, true ) ) {
+                unset( $sizes[ $key ] );
+            }
+        }
     }
 
     $mode       = wpturbo_get_resize_mode();
@@ -210,7 +224,9 @@ function wpturbo_handle_upload_convert_to_format( $upload ) {
                 break;
             }
             $attempts++;
-            sleep( 1 );
+            // Brief backoff for transient locks (e.g. AV scan, replication lag) —
+            // short enough that 5 retries don't stall the upload response for seconds.
+            usleep( 200000 );
         }
         if ( file_exists( $file_path ) ) {
             /* translators: %s: image filename */
@@ -505,12 +521,18 @@ function wpturbo_cleanup_leftover_originals() {
     ] );
 
     $active_files = [];
+    $known_bases  = [];
 
     foreach ( $attachments as $attachment_id ) {
         $file      = get_attached_file( $attachment_id );
         $metadata  = wp_get_attachment_metadata( $attachment_id );
         $dirname   = dirname( $file );
         $base_name = pathinfo( $file, PATHINFO_FILENAME );
+
+        // Track every attachment's base name per directory, regardless of
+        // exclusion status, so the deletion sweep below can confirm a
+        // candidate file actually belongs to a tracked attachment.
+        $known_bases[ $dirname ][ wpturbo_extract_attachment_base_name( $base_name ) ] = true;
 
         if ( in_array( $attachment_id, $excluded_images ) ) {
             if ( $file && file_exists( $file ) ) $active_files[ $file ] = true;
@@ -572,6 +594,14 @@ function wpturbo_cleanup_leftover_originals() {
 
         if ( ! in_array( $ext, [ 'jpg', 'jpeg', 'png', 'webp', 'avif' ] ) ) continue;
         if ( isset( $active_files[ $file_path ] ) ) continue;
+
+        // Safety net: only remove files that are clearly a derivative of a
+        // media-library attachment PixRefiner tracks. Anything else in the
+        // uploads folder (theme assets, other plugins' images, manually
+        // placed files) is left alone even though it's "unreferenced" here.
+        $candidate_dir  = dirname( $file_path );
+        $candidate_base = wpturbo_extract_attachment_base_name( pathinfo( $file_path, PATHINFO_FILENAME ) );
+        if ( empty( $known_bases[ $candidate_dir ][ $candidate_base ] ) ) continue;
 
         $should_delete = false;
         if ( in_array( $ext, [ 'jpg', 'jpeg', 'png' ] ) && ! $preserve_originals ) {
