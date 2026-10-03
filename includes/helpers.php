@@ -76,6 +76,52 @@ function wpturbo_delete_attachment_files( $attachment_id ) {
     }
 }
 
+// Bulk conversion records _pixrefiner_source_file — the name an image was
+// uploaded with (photo.jpg) — on each attachment it converts. If the
+// converted file had to be renamed (photo-1.webp, because another
+// attachment already owned photo.webp), swapping the extension would send
+// old photo.jpg links to that other image, so the URL fixers check this
+// first. Returns the new URL (matching -WxH size if it exists), or null.
+function wpturbo_original_upload_url( $original_url, $baseurl ) {
+    static $map = null;
+    if ( $map === null ) {
+        global $wpdb;
+        $map = [];
+        // If a name was reused (photo.jpg converted and deleted, then a new
+        // photo.jpg uploaded), the newest attachment wins — from that upload
+        // on, every photo.jpg link on the site was already showing it.
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+        $rows = $wpdb->get_results( $wpdb->prepare( "SELECT post_id, meta_value FROM {$wpdb->postmeta} WHERE meta_key = %s ORDER BY post_id ASC", '_pixrefiner_source_file' ) );
+        foreach ( $rows as $row ) $map[ $row->meta_value ] = (int) $row->post_id;
+    }
+    if ( ! $map ) return null;
+    $pos = strpos( $original_url, $baseurl . '/' );
+    if ( $pos === false ) return null;
+
+    // Links may percent-encode non-ASCII names (caf%C3%A9.jpg); the record
+    // holds the name as stored on disk (café.jpg).
+    $relative = rawurldecode( substr( $original_url, $pos + strlen( $baseurl ) + 1 ) );
+    $dir      = dirname( $relative );
+    $filename = pathinfo( $relative, PATHINFO_FILENAME );
+    $size     = preg_match( '/-\d+x\d+$/', $filename, $m ) ? $m[0] : '';
+    $stem     = ( $dir === '.' ? '' : "$dir/" ) . substr( $filename, 0, strlen( $filename ) - strlen( $size ) );
+    $ext      = '.' . pathinfo( $relative, PATHINFO_EXTENSION );
+
+    // Images uploaded before big-image scaling was disabled are attached as
+    // photo-scaled.jpg, while their sizes are still named photo-300x200.jpg.
+    $id = $map[ $stem . $ext ] ?? $map[ "$stem-scaled$ext" ] ?? null;
+    if ( ! $id ) return null;
+
+    $file = get_attached_file( $id );
+    if ( ! $file || ! file_exists( $file ) ) return null;
+    $url = wp_get_attachment_url( $id );
+    if ( $size ) {
+        $sized = pathinfo( $file, PATHINFO_FILENAME ) . $size . '.' . pathinfo( $file, PATHINFO_EXTENSION );
+        if ( file_exists( dirname( $file ) . "/$sized" ) ) return dirname( $url ) . "/$sized";
+    }
+    return $url;
+}
+
 function wpturbo_replace_urls_in_elementor_urls( $data, $baseurl, $basedir, $extension, &$checked_images ) {
     foreach ( $data as $key => &$value ) {
         if ( is_array( $value ) ) {
@@ -85,6 +131,13 @@ function wpturbo_replace_urls_in_elementor_urls( $data, $baseurl, $basedir, $ext
             if ( strpos( $original_url, $baseurl ) === false ) continue;
 
             $checked_images++;
+
+            $mapped_url = wpturbo_original_upload_url( $original_url, $baseurl );
+            if ( $mapped_url ) {
+                wpturbo_add_log_entry( "Replacing JSON: {$original_url} → {$mapped_url}" );
+                $value = $mapped_url;
+                continue;
+            }
 
             $dirname  = pathinfo( $original_url, PATHINFO_DIRNAME );
             $filename = pathinfo( $original_url, PATHINFO_FILENAME );

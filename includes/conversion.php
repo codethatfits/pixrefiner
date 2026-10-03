@@ -58,12 +58,13 @@ function wpturbo_register_custom_sizes() {
 
 // ─── Core format conversion ───────────────────────────────────────────────────
 
-function wpturbo_convert_to_format( $file_path, $dimension, &$log = null, $attachment_id = null, $suffix = '' ) {
+function wpturbo_convert_to_format( $file_path, $dimension, &$log = null, $attachment_id = null, $suffix = '', $out_base = '' ) {
     $use_avif  = wpturbo_get_use_avif();
     $format    = $use_avif ? 'image/avif' : 'image/webp';
     $extension = $use_avif ? '.avif' : '.webp';
     $path_info = pathinfo( $file_path );
-    $out_path  = $path_info['dirname'] . '/' . $path_info['filename'] . $suffix . $extension;
+    $out_base  = ( $out_base !== '' ) ? $out_base : $path_info['filename'];
+    $out_path  = $path_info['dirname'] . '/' . $out_base . $suffix . $extension;
     $quality   = wpturbo_get_quality();
     $mode      = wpturbo_get_resize_mode();
 
@@ -119,6 +120,91 @@ function wpturbo_convert_to_format( $file_path, $dimension, &$log = null, $attac
     return $out_path;
 }
 
+// WordPress only de-duplicates an upload against files with the *uploaded*
+// extension, so "photo.jpg" is accepted as-is even when "photo.webp" (from an
+// earlier upload whose original was deleted) is already there. Converting it
+// would then overwrite the other attachment's files. Pick a base name whose
+// converted output and breakpoint variants are all free, adding -1, -2, …
+// the same way WordPress does.
+//
+// By default any existing file counts as taken (right for a brand-new upload,
+// where renaming is harmless). Bulk conversion passes $taken_files instead —
+// the files other attachments own — so an attachment's own leftovers from an
+// earlier format switch don't push it to a needless -1 name, which would
+// also defeat the extension-swap the post URL fixer relies on.
+function wpturbo_unique_output_base( $file_path, $extension, $max_values, $taken_files = null ) {
+    $dirname  = dirname( $file_path );
+    $base     = pathinfo( $file_path, PATHINFO_FILENAME );
+    $suffixes = [ '', '-150x150' ];
+    foreach ( array_slice( $max_values, 1 ) as $dimension ) {
+        $suffixes[] = "-{$dimension}";
+    }
+
+    $candidate = $base;
+    $number    = 1;
+    while ( true ) {
+        $taken = false;
+        foreach ( $suffixes as $suffix ) {
+            $p = "$dirname/$candidate$suffix.$extension";
+            $is_taken = ( $taken_files === null )
+                ? ( $p !== $file_path && file_exists( $p ) )
+                : isset( $taken_files[ $p ] );
+            if ( $is_taken ) {
+                $taken = true;
+                break;
+            }
+        }
+        if ( ! $taken ) return $candidate;
+        $candidate = "$base-$number";
+        $number++;
+    }
+}
+
+// Files in $dirname that some attachment other than $attachment_id lists as
+// its own (main file, sizes, pre-scaling original), keyed by path.
+//
+// Only attachments that could collide with names built from $base are
+// loaded: those whose base starts with $base (photo-1, photo-1200, …) and
+// those whose base is a "-"-separated prefix of it (photo owns
+// photo-1200.webp, which "photo-1200.jpg" would otherwise convert onto).
+// Loading every attachment in the folder would be far too slow on sites
+// that don't use year/month upload folders.
+function wpturbo_files_owned_by_other_attachments( $dirname, $base, $attachment_id ) {
+    global $wpdb;
+    $basedir  = wp_upload_dir()['basedir'];
+    $relative = ltrim( substr( $dirname, strlen( $basedir ) ), '/' );
+    $prefix   = ( $relative === '' ) ? '' : $relative . '/';
+
+    $where  = [ 'meta_value LIKE %s' ];
+    $params = [ $wpdb->esc_like( $prefix . $base ) . '%' ];
+    $parts  = explode( '-', $base );
+    for ( $i = 1; $i < count( $parts ); $i++ ) {
+        $where[]  = 'meta_value LIKE %s';
+        $params[] = $wpdb->esc_like( $prefix . implode( '-', array_slice( $parts, 0, $i ) ) . '.' ) . '%';
+    }
+    $params[] = $attachment_id;
+
+    // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+    $ids = $wpdb->get_col( $wpdb->prepare(
+        "SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key = '_wp_attached_file' AND ( " . implode( ' OR ', $where ) . ' ) AND post_id != %d',
+        $params
+    ) );
+    update_meta_cache( 'post', $ids );
+
+    $owned = [];
+    foreach ( $ids as $id ) {
+        $file = get_attached_file( $id );
+        if ( ! $file || dirname( $file ) !== $dirname ) continue;
+        $owned[ $file ] = true;
+        $meta = wp_get_attachment_metadata( $id );
+        foreach ( $meta['sizes'] ?? [] as $size_data ) {
+            if ( ! empty( $size_data['file'] ) ) $owned[ "$dirname/{$size_data['file']}" ] = true;
+        }
+        if ( ! empty( $meta['original_image'] ) ) $owned[ "$dirname/{$meta['original_image']}" ] = true;
+    }
+    return $owned;
+}
+
 // ─── Auto-convert on upload ───────────────────────────────────────────────────
 
 add_filter( 'wp_handle_upload', 'wpturbo_handle_upload_convert_to_format', 10, 1 );
@@ -171,9 +257,16 @@ function wpturbo_handle_upload_convert_to_format( $upload ) {
         $valid_max_values = array_filter( $max_values, fn( $w, $i ) => $i === 0 || $w <= $original_width, ARRAY_FILTER_USE_BOTH );
     }
 
+    $out_base = wpturbo_unique_output_base( $file_path, $use_avif ? 'avif' : 'webp', $valid_max_values );
+    if ( $out_base !== pathinfo( $file_path, PATHINFO_FILENAME ) ) {
+        /* translators: %1$s: uploaded filename, %2$s: new base filename */
+        $log[] = sprintf( __( 'Renamed: %1$s → %2$s (a file with that name already exists)', 'pixrefiner' ), basename( $file_path ), $out_base );
+    }
+
+    $original_upload = $upload;
     foreach ( $valid_max_values as $index => $dimension ) {
         $suffix        = ( $index === 0 ) ? '' : "-{$dimension}";
-        $new_file_path = wpturbo_convert_to_format( $file_path, $dimension, $log, $attachment_id, $suffix );
+        $new_file_path = wpturbo_convert_to_format( $file_path, $dimension, $log, $attachment_id, $suffix, $out_base );
         if ( $new_file_path ) {
             if ( $index === 0 ) {
                 $upload['file'] = $new_file_path;
@@ -182,15 +275,18 @@ function wpturbo_handle_upload_convert_to_format( $upload ) {
             }
             $new_files[] = $new_file_path;
         } else {
+            // Never delete the source: an upload already in the target format
+            // is re-saved in place, so it can appear in $new_files.
             foreach ( $new_files as $f ) {
-                if ( file_exists( $f ) ) wp_delete_file( $f );
+                if ( $f !== $file_path && file_exists( $f ) ) wp_delete_file( $f );
             }
             /* translators: %s: image filename */
             $log[] = sprintf( __( 'Error: Conversion failed for %s, rolling back', 'pixrefiner' ), basename( $file_path ) );
             /* translators: %s: image filename */
             $log[] = sprintf( __( 'Original preserved: %s', 'pixrefiner' ), basename( $file_path ) );
             update_option( 'webp_conversion_log', array_slice( (array) $log, -500 ) );
-            return $upload;
+            // Hand WordPress the original file, not the converted one just deleted.
+            return $original_upload;
         }
     }
 
@@ -199,7 +295,9 @@ function wpturbo_handle_upload_convert_to_format( $upload ) {
     // wp_generate_attachment_metadata after the attachment post is created.
     // wpturbo_fix_format_metadata registers our custom breakpoints in that metadata.
 
-    if ( $file_ext !== ( $use_avif ? 'avif' : 'webp' ) && file_exists( $file_path ) && ! wpturbo_get_preserve_originals() ) {
+    // Compare paths rather than extensions: an upload already in the target
+    // format that had to be renamed above leaves its source file behind too.
+    if ( $file_path !== $upload['file'] && file_exists( $file_path ) && ! wpturbo_get_preserve_originals() ) {
         $attempts     = 0;
         $chmod_failed = false;
         while ( $attempts < 5 && file_exists( $file_path ) ) {
@@ -361,6 +459,7 @@ function wpturbo_convert_single_image() {
         $ext       = strtolower( pathinfo( $file_path, PATHINFO_EXTENSION ) );
         $new_files = [];
         $success   = true;
+        $original_mime = get_post_mime_type( $attachment_id );
 
         $old_sizes     = $meta['sizes'] ?? [];
         $main_size     = $max_values[0] ?? null;
@@ -372,7 +471,9 @@ function wpturbo_convert_single_image() {
                 $is_redundant = ! in_array( $old_dim, $max_values ) || ( $main_size && $old_dim === $main_size );
                 if ( $is_redundant ) {
                     $old_file = "$dirname/$base_name-$old_dim.$current_ext";
-                    if ( file_exists( $old_file ) ) {
+                    // Only delete it if it's this attachment's own size file —
+                    // a same-named file can belong to a different attachment.
+                    if ( ( $size_data['file'] ?? '' ) === basename( $old_file ) && file_exists( $old_file ) ) {
                         wp_delete_file( $old_file );
                         /* translators: %s: image filename */
                         $log[] = sprintf( __( 'Deleted duplicate or outdated size: %s', 'pixrefiner' ), basename( $old_file ) );
@@ -404,11 +505,29 @@ function wpturbo_convert_single_image() {
             }
         }
 
+        // This attachment's existing size files; a failed conversion must not
+        // roll these back (delete them), as they predate this run.
+        $own_files = [];
+        foreach ( $old_sizes as $size_data ) {
+            if ( ! empty( $size_data['file'] ) ) $own_files[] = "$dirname/{$size_data['file']}";
+        }
+
+        // Converting photo.jpg to photo.webp must not overwrite a different
+        // attachment that already owns photo.webp (or its breakpoint files).
+        $taken_files = wpturbo_files_owned_by_other_attachments( $dirname, $base_name, $attachment_id );
+        $out_base    = wpturbo_unique_output_base( $file_path, $current_ext, $valid_max_values, $taken_files );
+        if ( $out_base !== $base_name ) {
+            /* translators: %1$s: image filename, %2$s: new base filename */
+            $log[] = sprintf( __( 'Renamed: %1$s → %2$s (a file with that name already exists)', 'pixrefiner' ), basename( $file_path ), $out_base );
+        }
+
+        $main_output = null;
         foreach ( $valid_max_values as $index => $dimension ) {
             $suffix = ( $index === 0 ) ? '' : "-$dimension";
-            $output = wpturbo_convert_to_format( $file_path, $dimension, $log, $attachment_id, $suffix );
+            $output = wpturbo_convert_to_format( $file_path, $dimension, $log, $attachment_id, $suffix, $out_base );
             if ( $output ) {
                 if ( $index === 0 ) {
+                    $main_output = $output;
                     update_attached_file( $attachment_id, $output );
                     wp_update_post( [ 'ID' => $attachment_id, 'post_mime_type' => $format ] );
                 }
@@ -419,7 +538,7 @@ function wpturbo_convert_single_image() {
             }
         }
 
-        $thumb_path = "$dirname/$base_name-150x150.$current_ext";
+        $thumb_path = "$dirname/$out_base-150x150.$current_ext";
         if ( ! file_exists( $thumb_path ) ) {
             $editor = wp_get_image_editor( $file_path );
             if ( ! is_wp_error( $editor ) ) {
@@ -438,8 +557,15 @@ function wpturbo_convert_single_image() {
         }
 
         if ( ! $success ) {
+            // Re-converting an image already in the target format overwrites
+            // its own files in place; deleting those would lose the image.
             foreach ( $new_files as $f ) {
-                if ( file_exists( $f ) ) wp_delete_file( $f );
+                if ( $f !== $file_path && ! in_array( $f, $own_files, true ) && file_exists( $f ) ) wp_delete_file( $f );
+            }
+            // Point the attachment back at its original, untouched file.
+            if ( ! empty( $new_files ) ) {
+                update_attached_file( $attachment_id, $file_path );
+                wp_update_post( [ 'ID' => $attachment_id, 'post_mime_type' => $original_mime ] );
             }
             /* translators: %s: image filename */
             $log[] = sprintf( __( 'Error: Conversion failed for %s, rolled back.', 'pixrefiner' ), basename( $file_path ) );
@@ -455,11 +581,11 @@ function wpturbo_convert_single_image() {
                 // on top without discarding those entries.
                 foreach ( $valid_max_values as $index => $dimension ) {
                     if ( $index === 0 ) continue;
-                    $size_file = "$dirname/$base_name-$dimension.$current_ext";
+                    $size_file = "$dirname/$out_base-$dimension.$current_ext";
                     if ( file_exists( $size_file ) ) {
                         $size_dims = wp_getimagesize( $size_file );
                         $meta['sizes']["custom-$dimension"] = [
-                            'file'      => "$base_name-$dimension.$current_ext",
+                            'file'      => "$out_base-$dimension.$current_ext",
                             'width'     => $size_dims ? $size_dims[0] : ( ( $mode === 'width' ) ? $dimension : 0 ),
                             'height'    => $size_dims ? $size_dims[1] : ( ( $mode === 'height' ) ? $dimension : 0 ),
                             'mime-type' => $format,
@@ -468,7 +594,7 @@ function wpturbo_convert_single_image() {
                 }
                 if ( file_exists( $thumb_path ) ) {
                     $meta['sizes']['thumbnail'] = [
-                        'file'      => "$base_name-150x150.$current_ext",
+                        'file'      => "$out_base-150x150.$current_ext",
                         'width'     => 150,
                         'height'    => 150,
                         'mime-type' => $format,
@@ -480,7 +606,18 @@ function wpturbo_convert_single_image() {
             }
         }
 
-        if ( ! wpturbo_get_preserve_originals() && file_exists( $file_path ) && $ext !== $current_ext ) {
+        // Posts keep linking to the name the image was uploaded with
+        // (photo.jpg). Record it on first conversion so the URL fixer can find
+        // the image even if a later run renames it (e.g. photo.avif →
+        // photo-1.webp after a format switch). add_post_meta( …, true ) never
+        // overwrites, so the original upload name is the one kept. A rename
+        // of an image converted before this was recorded saves its current
+        // name instead, which is the best still known.
+        if ( $main_output && ( in_array( $ext, [ 'jpg', 'jpeg', 'png' ], true ) || $out_base !== $base_name ) ) {
+            add_post_meta( $attachment_id, '_pixrefiner_source_file', _wp_relative_upload_path( $file_path ), true );
+        }
+
+        if ( ! wpturbo_get_preserve_originals() && $main_output && $file_path !== $main_output && file_exists( $file_path ) ) {
             wp_delete_file( $file_path );
             /* translators: %s: image filename */
             $log[] = sprintf( __( 'Deleted original: %s', 'pixrefiner' ), basename( $file_path ) );

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: PixRefiner
  * Description: Convert, resize, and optimise media to WebP or AVIF with fine-grained control over sizes, quality, and batch processing.
- * Version:     4.0.1
+ * Version:     4.0.2
  * Author:      Dan Jasker
  * License:     GPL-2.0-or-later
  * Text Domain: pixrefiner
@@ -13,7 +13,7 @@
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
-define( 'PIXREFINER_VERSION',     '4.0.1' );
+define( 'PIXREFINER_VERSION',     '4.0.2' );
 define( 'PIXREFINER_PLUGIN_FILE', __FILE__ );
 define( 'PIXREFINER_PLUGIN_DIR',  plugin_dir_path( __FILE__ ) );
 

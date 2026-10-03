@@ -32,6 +32,9 @@ function wpturbo_uninstall_delete_options() {
     foreach ( $options as $option ) {
         delete_option( $option );
     }
+
+    // Original filenames recorded when bulk conversion had to rename a file.
+    delete_post_meta_by_key( '_pixrefiner_source_file' );
 }
 
 if ( is_multisite() ) {

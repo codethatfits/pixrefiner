@@ -136,7 +136,10 @@ function wpturbo_webp_converter_page() {
 
                 <!-- Pane 1: Controls -->
                 <div style="background: #FFFFFF; padding: 20px; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-                    <h1 style="font-size: 20px; font-weight: bold; color: #333; margin: -5px 0 15px 0;"><?php esc_html_e( 'PixRefiner - Image Optimization - v4.0', 'pixrefiner' ); ?></h1>
+                    <h1 style="font-size: 20px; font-weight: bold; color: #333; margin: -5px 0 15px 0;"><?php
+                        /* translators: %s: plugin version number */
+                        echo esc_html( sprintf( __( 'PixRefiner - Image Optimization - v%s', 'pixrefiner' ), PIXREFINER_VERSION ) );
+                    ?></h1>
 
                     <?php if ( ! $has_image_library ) : ?>
                         <div class="notice notice-error" style="margin-bottom: 20px;">
@@ -193,6 +196,9 @@ function wpturbo_webp_converter_page() {
                             <button id="run-all"           class="button button-primary"><?php esc_html_e( 'Run All (1-3)', 'pixrefiner' ); ?></button>
                             <button id="stop-conversion"   class="button" style="display: none;"><?php esc_html_e( 'Stop', 'pixrefiner' ); ?></button>
                         </div>
+                        <p class="description" style="margin: -10px 0 20px 0;">
+                            <?php esc_html_e( 'Run the steps in order, or use Run All. Step 1 converts each image but leaves behind the JPG/PNG copies WordPress resized it to; step 2 removes them (unless Preserve Original Files is on). If you delete an image from the Media Library before running step 2, its leftover JPG/PNG copies stay in your uploads folder.', 'pixrefiner' ); ?>
+                        </p>
                         <div style="margin-bottom: 20px; display: flex; gap: 10px;">
                             <button id="clear-log"      class="button"><?php esc_html_e( 'Clear Log', 'pixrefiner' ); ?></button>
                             <button id="reset-defaults" class="button"><?php esc_html_e( 'Reset Defaults', 'pixrefiner' ); ?></button>

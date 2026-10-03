@@ -294,6 +294,9 @@ function wpturbo_convert_post_images_to_format() {
 }
 
 function wpturbo_replace_url_string( $original_url, $baseurl, $basedir, $extension ) {
+    $mapped_url = wpturbo_original_upload_url( $original_url, $baseurl );
+    if ( $mapped_url ) return $mapped_url;
+
     $dirname      = pathinfo( $original_url, PATHINFO_DIRNAME );
     $filename     = pathinfo( $original_url, PATHINFO_FILENAME );
     $new_url      = $dirname . '/' . $filename . '.' . $extension;
